@@ -1,0 +1,296 @@
+<!doctype html>
+<html lang="en">
+<head>
+	<title>Functions Grapher - Assignment 7 - CS4406</title>
+	<meta charset="utf-8">
+	<meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
+	<link rel=stylesheet href="css/base.css"/>
+</head> 
+<body>
+
+<script src="js/Three.js"></script>
+<script src="js/Detector.js"></script>
+<script src="js/Stats.js"></script>
+<script src="js/TrackballControls.js"></script>
+<script src="js/THREEx.KeyboardState.js"></script>
+<script src="js/THREEx.FullScreen.js"></script>
+<script src="js/THREEx.WindowResize.js"></script>
+<script src="js/parser.js"></script>
+<script type='text/javascript' src='js/DAT.GUI.min.js'></script>
+
+<!--> a great part of this code is by Lee Stemkoski
+
+      all JavaScripts and CSS is sourced from various locations on the internet
+      the specific copyright for each file is containted within each file itself -->
+      
+<!-- We will display the options box so user can enter their own function to graph -->
+<div id="container" style="position: absolute; left:0px; top:0px"></div>
+<script>
+
+// MAIN code starts here
+
+// first we define the standard global variables and allow keyboard entries
+var container, scene, camera, renderer, controls, stats;
+var keyboard = new THREEx.KeyboardState();
+var clock = new THREE.Clock();
+
+// custom global variables for graph functions.
+var graph, graph_zText, 
+	graph_xMin, graph_xMax, graph_yMin, graph_yMax,
+	graph_a, graph_b, graph_c, graph_d,
+	graph_segments;
+
+// default function is set to produce a hyperbolic paraboloid as needed by the assignment
+var zFuncText = "x^2 - y^2";
+var zFunc = Parser.parse(zFuncText).toJSFunction( ['x','y'] );
+
+// parameters for the equations to start with
+var a = 0.01, b = 0.01, c = 0.01, d = 0.01;
+
+// providing the number of segments and their starting positions
+var meshFunction;
+var segments = 20, 
+	xMin = -10, xMax = 10, xRange = xMax - xMin,
+	yMin = -10, yMax = 10, yRange = yMax - yMin,
+	zMin = -10, zMax = 10, zRange = zMax - zMin;
+	
+// variables for geometry, material and the mesh
+var graphGeometry;
+var gridMaterial, wireMaterial, vertexColorMaterial;
+var graphMesh;
+
+init();
+animate();
+
+// all functions to be defined below
+// FUNCTIONS 		
+function init() 
+{
+	// function to initiate the SCENE
+	scene = new THREE.Scene();
+	// setting up the CAMERA and its default position
+	var SCREEN_WIDTH = window.innerWidth, SCREEN_HEIGHT = window.innerHeight;
+	var VIEW_ANGLE = 45, ASPECT = SCREEN_WIDTH / SCREEN_HEIGHT, NEAR = 0.1, FAR = 2000;
+	camera = new THREE.PerspectiveCamera( VIEW_ANGLE, ASPECT, NEAR, FAR);
+	scene.add(camera);
+	camera.position.set(150,400,100);
+	camera.lookAt(scene.position);	
+	// using WebGL RENDERER actually from Three.js code. CanvasRenderer is not used unless WebGL
+	// capabilities are not available
+	if ( Detector.webgl )
+		renderer = new THREE.WebGLRenderer( {antialias:true} );
+	else
+		renderer = new THREE.CanvasRenderer(); 
+	renderer.setSize(SCREEN_WIDTH, SCREEN_HEIGHT);
+	
+	// adding the container that was defined above
+	container = document.getElementById( 'container' );
+	container.appendChild( renderer.domElement );
+	
+	// EVENTS to control resizing of Window
+	THREEx.WindowResize(renderer, camera);
+	THREEx.FullScreen.bindKey({ charCode : 'm'.charCodeAt(0) });
+	
+	// we will ad CONTROLS to allow continuous rendering when tranformation is applied by user
+	controls = new THREE.TrackballControls( camera, renderer.domElement );
+	
+	// the stats are updated and displayed as they change
+	stats = new Stats();
+	stats.domElement.style.position = 'absolute';
+	stats.domElement.style.bottom = '0px';
+	stats.domElement.style.zIndex = 100;
+	container.appendChild( stats.domElement );
+	
+	// A light is added as in previous assignments
+	var light = new THREE.PointLight(0xffffff);
+	light.position.set(0,250,0);
+	scene.add(light);
+	
+	// the AxisHelper is provided as needed in the assignment from the Three.js code
+	scene.add( new THREE.AxisHelper() );
+
+	// now we add the wireframe for the plane described by x and y axis so that location of the graph
+	// is easily known for its starting points as needed by assignment and add it to the scene
+	var wireframeMaterial = new THREE.MeshBasicMaterial( { color: 0x000088, wireframe: true, side:THREE.DoubleSide } ); 
+	var floorGeometry = new THREE.PlaneGeometry(1000,1000,10,10);
+	var floor = new THREE.Mesh(floorGeometry, wireframeMaterial);
+	floor.position.z = -0.01;	
+	scene.add(floor);
+	
+	// define the material and mesh for the graph as well as its shade
+	var normMaterial = new THREE.MeshNormalMaterial;
+	var shadeMaterial = new THREE.MeshLambertMaterial( { color: 0xff0000 } );
+	
+	// we will draw a wireframe texture from one single square image and apply colors to it
+	var wireTexture = new THREE.ImageUtils.loadTexture( 'square.png' );
+	wireTexture.wrapS = wireTexture.wrapT = THREE.RepeatWrapping; 
+	wireTexture.repeat.set( 40, 40 );
+	wireMaterial = new THREE.MeshBasicMaterial( { map: wireTexture, vertexColors: THREE.VertexColors, side:THREE.DoubleSide } );
+	var vertexColorMaterial  = new THREE.MeshBasicMaterial( { vertexColors: THREE.VertexColors } );
+	renderer.setClearColor( 0x888888, 1 );
+
+    // now to setup the graphic interface for resolving the functions
+
+	graph = new dat.GUI();	
+	parameters = 
+	{
+		resetCam:  function() { resetCamera(); },	
+		preset1:   function() { preset01(); },
+		graphFunc: function() { createGraph(); },
+		finalValue: 337
+	};
+
+	// Equation for the graph from its variables
+	graph_zText = graph.add( this, 'zFuncText' ).name('z = f(x,y) = ');
+	graph_xMin = graph.add( this, 'xMin' ).name('x Minimum = ');
+	graph_xMax = graph.add( this, 'xMax' ).name('x Maximum = ');
+	graph_yMin = graph.add( this, 'yMin' ).name('y Minimum = ');
+	graph_yMax = graph.add( this, 'yMax' ).name('y Maximum = ');
+	graph_segments = graph.add( this, 'segments' ).name('Subdivisions = ');
+
+	// defining the parameters of the function
+	var graph_parameters = graph.addFolder('Parameters');
+	a = b = c = d = 0.01;
+	graph_a = graph_parameters.add( this, 'a' ).min(-5).max(5).step(0.01).name('a = ');
+	graph_a.onChange( function(value) { createGraph(); } );
+	graph_b = graph_parameters.add( this, 'b' ).min(-5).max(5).step(0.01).name('b = ');
+	graph_b.onChange( function(value) { createGraph(); } );
+	graph_c = graph_parameters.add( this, 'c' ).min(-5).max(5).step(0.01).name('c = ');
+	graph_c.onChange( function(value) { createGraph(); } );
+	graph_d = graph_parameters.add( this, 'd' ).min(-5).max(5).step(0.01).name('d = ');
+	graph_d.onChange( function(value) { createGraph(); } );
+	graph_a.setValue(1);
+	graph_b.setValue(1);
+	graph_c.setValue(1);
+	graph_d.setValue(1);
+
+	// the preset function in this code is used to render the default graph
+	var graph_preset = graph.addFolder('Preset equations');
+	graph_preset.add( parameters, 'preset1' ).name('Hyperbolic Paraboloid');
+
+	graph.add( parameters, 'resetCam' ).name("Reset Camera");
+	graph.add( parameters, 'graphFunc' ).name("Graph Function");	
+
+	preset01();
+}
+
+// finally to draw the graph using the non-parametric methods
+function createGraph()
+{
+	xRange = xMax - xMin;
+	yRange = yMax - yMin;
+	zFunc = Parser.parse(zFuncText).toJSFunction( ['x','y'] );
+	meshFunction = function(x, y) 
+	{
+		x = xRange * x + xMin;
+		y = yRange * y + yMin;
+		var z = zFunc(x,y); //= Math.cos(x) * Math.sqrt(y);
+		if ( isNaN(z) )
+			return new THREE.Vector3(0,0,0); // TODO: better fix
+		else
+			return new THREE.Vector3(x, y, z);
+	};
+	
+	// this code will repeat the image texture
+	graphGeometry = new THREE.ParametricGeometry( meshFunction, segments, segments, true );
+	
+	// now to calculate the colors for the image based on z values
+	graphGeometry.computeBoundingBox();
+	zMin = graphGeometry.boundingBox.min.z;
+	zMax = graphGeometry.boundingBox.max.z;
+	zRange = zMax - zMin;
+	var color, point, face, numberOfSides, vertexIndex;
+	
+	// faces are indexed using characters
+	var faceIndices = [ 'a', 'b', 'c', 'd' ];
+	
+	// first, assign colors to vertices as desired
+	for ( var i = 0; i < graphGeometry.vertices.length; i++ ) 
+	{
+		point = graphGeometry.vertices[ i ];
+		color = new THREE.Color( 0x0000ff );
+		color.setHSL( 0.7 * (zMax - point.z) / zRange, 1, 0.5 );
+		graphGeometry.colors[i] = color; // use this array to color
+	}
+	// copying the colors as necessary to the face's vertexColors array.
+	for ( var i = 0; i < graphGeometry.faces.length; i++ ) 
+	{
+		face = graphGeometry.faces[ i ];
+		numberOfSides = ( face instanceof THREE.Face3 ) ? 3 : 4;
+		for( var j = 0; j < numberOfSides; j++ ) 
+		{
+			vertexIndex = face[ faceIndices[ j ] ];
+			face.vertexColors[ j ] = graphGeometry.colors[ vertexIndex ];
+		}
+	}
+	
+	// now the material choices: vertexColorMaterial, wireMaterial , normMaterial , shadeMaterial
+	
+	if (graphMesh) 
+	{
+		scene.remove( graphMesh );
+		// renderer.deallocateObject( graphMesh );
+	}
+
+	wireMaterial.map.repeat.set( segments, segments );
+	
+	graphMesh = new THREE.Mesh( graphGeometry, wireMaterial );
+	graphMesh.doubleSided = true;
+	scene.add(graphMesh);
+}
+
+// these are the presets which will load with code above when page is first loaded
+
+function preset01()
+{
+	graph_zText.setValue("x^2 - y^2");
+	graph_xMin.setValue(-1); graph_xMax.setValue(1);
+	graph_yMin.setValue(-1); graph_yMax.setValue(1);
+	graph_a.setValue(1);
+	graph_b.setValue(1);
+	graph_segments.setValue(40);
+	createGraph(); resetCamera();
+}
+
+// the reset camera on option box will apply the settings defined below
+function resetCamera()
+{
+	// CAMERA
+	var SCREEN_WIDTH = window.innerWidth, SCREEN_HEIGHT = window.innerHeight;
+	var VIEW_ANGLE = 45, ASPECT = SCREEN_WIDTH / SCREEN_HEIGHT, NEAR = 0.1 , FAR = 400000;
+	camera = new THREE.PerspectiveCamera( VIEW_ANGLE, ASPECT, NEAR, FAR);
+	camera.position.set( 3*xMax, 5*yMax, 2*zMax);
+	camera.up = new THREE.Vector3( 0, 0, 5 );
+	camera.lookAt(scene.position);	
+	scene.add(camera);
+	
+	controls = new THREE.TrackballControls( camera, renderer.domElement );
+	THREEx.WindowResize(renderer, camera);
+}
+
+// finally animate and render the whole thing
+function animate() 
+{
+    requestAnimationFrame( animate );
+	render();		
+	update();
+}
+
+function update()
+{
+	if ( keyboard.pressed("z") ) 
+	{ 
+	}
+	
+	controls.update();
+	stats.update();
+}
+
+function render() 
+{
+	renderer.render( scene, camera );
+}
+
+</script>
+</body>
+</html>
